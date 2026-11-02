@@ -1,0 +1,86 @@
+name: Package
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            platform: mac
+            arch: arm64
+          - runner: windows-2022
+            platform: win
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+
+      - name: Fetch and build
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          SOURCE_COMMIT: ${{ secrets.SOURCE_COMMIT }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/build.log"
+          trap 'rm -f "$log"' EXIT
+          fail() { echo 'Build failed; check the private build configuration.'; exit 1; }
+          [[ "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || fail
+          [ -n "$SOURCE_TOKEN" ] || fail
+          git init "$RUNNER_TEMP/source" >"$log" 2>&1 || fail
+          cd "$RUNNER_TEMP/source"
+          git remote add origin "https://github.com/$SOURCE_REPOSITORY.git" >"$log" 2>&1 || fail
+          auth=$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\r\n')
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          git fetch --depth=1 origin "$SOURCE_COMMIT" >>"$log" 2>&1 || fail
+          unset auth SOURCE_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          git checkout --detach FETCH_HEAD >>"$log" 2>&1 || fail
+          actual=$(git rev-parse HEAD 2>>"$log") || fail
+          [ "$actual" = "$SOURCE_COMMIT" ] || fail
+          case "$PLATFORM" in
+            mac) test -x apps/desktop/runtime/python/bin/python3 || fail ;;
+            win) test -f apps/desktop/runtime/python/python.exe || fail ;;
+            *) fail ;;
+          esac
+          [ "$(node -p 'process.versions.node.split(".")[0]' 2>>"$log")" = 22 ] || fail
+          npm ci >>"$log" 2>&1 || fail
+          npm run build:desktop-ui >>"$log" 2>&1 || fail
+          npm run dist -w @omp/desktop -- "--$PLATFORM" "--$ARCH" --publish never >>"$log" 2>&1 || fail
+          echo 'Build completed.'
+
+      - name: Upload to private destination
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEST_TOKEN }}
+          DEST_REPOSITORY: ${{ secrets.DEST_REPOSITORY }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/upload.log"
+          trap 'rm -f "$log" "$RUNNER_TEMP/private.out"' EXIT
+          fail() { echo 'Private upload failed; check the destination configuration.'; exit 1; }
+          [[ "$DEST_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail
+          [ -n "$GH_TOKEN" ] || fail
+          gh api "repos/$DEST_REPOSITORY" --jq .private >"$RUNNER_TEMP/private.out" 2>>"$log" || fail
+          [ "$(cat "$RUNNER_TEMP/private.out")" = true ] || fail
+          files=()
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find "$RUNNER_TEMP/source/apps/desktop/dist" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -print0 2>>"$log")
+          [ "${#files[@]}" -gt 0 ] || fail
+          tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
+          gh release create "$tag" "${files[@]}" --repo "$DEST_REPOSITORY" --draft --title "$tag" --notes '' >>"$log" 2>&1 || fail
+          echo 'Private upload completed.'
