@@ -32,6 +32,7 @@ jobs:
           SOURCE_COMMIT: ${{ secrets.SOURCE_COMMIT }}
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
+          BUILD_COMMAND: ${{ secrets.BUILD_COMMAND }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
           set -eu
@@ -52,15 +53,8 @@ jobs:
           git checkout --detach FETCH_HEAD >>"$log" 2>&1 || fail
           actual=$(git rev-parse HEAD 2>>"$log") || fail
           [ "$actual" = "$SOURCE_COMMIT" ] || fail
-          case "$PLATFORM" in
-            mac) test -x apps/desktop/runtime/python/bin/python3 || fail ;;
-            win) test -f apps/desktop/runtime/python/python.exe || fail ;;
-            *) fail ;;
-          esac
-          [ "$(node -p 'process.versions.node.split(".")[0]' 2>>"$log")" = 22 ] || fail
-          npm ci >>"$log" 2>&1 || fail
-          npm run build:desktop-ui >>"$log" 2>&1 || fail
-          npm run dist -w @omp/desktop -- "--$PLATFORM" "--$ARCH" --publish never >>"$log" 2>&1 || fail
+          [ -n "$BUILD_COMMAND" ] || fail
+          bash -c "$BUILD_COMMAND" >>"$log" 2>&1 || fail
           echo 'Build completed.'
 
       - name: Upload to private destination
@@ -69,6 +63,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEST_TOKEN }}
           DEST_REPOSITORY: ${{ secrets.DEST_REPOSITORY }}
           PLATFORM: ${{ matrix.platform }}
+          OUTPUT_DIRECTORY: ${{ secrets.OUTPUT_DIRECTORY }}
         run: |
           set -eu
           log="$RUNNER_TEMP/upload.log"
@@ -79,7 +74,8 @@ jobs:
           gh api "repos/$DEST_REPOSITORY" --jq .private >"$RUNNER_TEMP/private.out" 2>>"$log" || fail
           [ "$(cat "$RUNNER_TEMP/private.out")" = true ] || fail
           files=()
-          while IFS= read -r -d '' file; do files+=("$file"); done < <(find "$RUNNER_TEMP/source/apps/desktop/dist" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -print0 2>>"$log")
+          [[ -n "$OUTPUT_DIRECTORY" && "$OUTPUT_DIRECTORY" != /* && "$OUTPUT_DIRECTORY" != *..* ]] || fail
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find "$RUNNER_TEMP/source/$OUTPUT_DIRECTORY" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -print0 2>>"$log")
           [ "${#files[@]}" -gt 0 ] || fail
           tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
           gh release create "$tag" "${files[@]}" --repo "$DEST_REPOSITORY" --draft --title "$tag" --notes '' >>"$log" 2>&1 || fail
