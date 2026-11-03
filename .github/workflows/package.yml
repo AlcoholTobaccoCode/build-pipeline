@@ -103,6 +103,7 @@ jobs:
           git checkout --detach FETCH_HEAD >>"$log" 2>&1 || fail
           actual=$(git rev-parse HEAD 2>>"$log") || fail
           [ "$actual" = "$SOURCE_COMMIT" ] || fail
+          echo 'Source checkout verified.'
           [ -n "$BUILD_COMMAND" ] || fail
           bash -c "$BUILD_COMMAND" >>"$log" 2>&1 || fail
           echo 'Build completed.'
