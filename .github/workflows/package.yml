@@ -80,6 +80,7 @@ jobs:
           SOURCE_REPOSITORY: ${{ secrets.CAD_SOURCE_REPOSITORY }}
           SOURCE_TOKEN: ${{ secrets.CAD_SOURCE_TOKEN }}
           SOURCE_COMMIT: ${{ needs.resolve-source.outputs.commit }}
+          PLATFORM: ${{ matrix.platform }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
           set -eu
@@ -101,7 +102,13 @@ jobs:
           actual=$(git rev-parse HEAD 2>>"$log") || fail
           [ "$actual" = "$SOURCE_COMMIT" ] || fail
           echo 'Source checkout verified.'
-          bash scripts/desktop/package-ci.sh >>"$log" 2>&1 || fail
+          if ! bash scripts/desktop/package-ci.sh >>"$log" 2>&1; then
+            if [ "$PLATFORM" = win ]; then
+              echo 'Windows packaging is blocked: the CAD runtime assembler is not available.'
+              exit 1
+            fi
+            fail
+          fi
           echo 'Build completed.'
 
       - name: Upload to private destination
