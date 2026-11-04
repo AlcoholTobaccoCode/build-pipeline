@@ -106,6 +106,7 @@ jobs:
           echo 'Source checkout verified.'
           build_command="${BUILD_COMMAND:-bash scripts/desktop/package-ci.sh}"
           if ! bash -c "$build_command" >>"$log" 2>&1; then
+            cp "$log" "$RUNNER_TEMP/build-failure.log" 2>/dev/null || true
             if [ -s "$RUNNER_TEMP/build-stage.txt" ]; then
               echo "Build failed at stage: $(tr -cd 'a-z-' < "$RUNNER_TEMP/build-stage.txt")"
             fi
@@ -137,3 +138,20 @@ jobs:
           tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
           gh release create "$tag" "${files[@]}" --repo "$DEST_REPOSITORY" --draft --title "$tag" --notes '' >>"$log" 2>&1 || fail
           echo 'Private upload completed.'
+
+      - name: Preserve failure log privately
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.CAD_DEST_TOKEN }}
+          DEST_REPOSITORY: ${{ secrets.CAD_DEST_REPOSITORY }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/build-failure.log"
+          [ -s "$log" ] || exit 0
+          [[ "$DEST_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 0
+          [ -n "$GH_TOKEN" ] || exit 0
+          tag="diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
+          gh release create "$tag" "$log" --repo "$DEST_REPOSITORY" --draft --title "$tag" --notes '' >/dev/null 2>&1 || true
+          rm -f "$log"
