@@ -68,7 +68,7 @@ jobs:
             platform: win
             arch: x64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -81,6 +81,8 @@ jobs:
           SOURCE_TOKEN: ${{ secrets.CAD_SOURCE_TOKEN }}
           SOURCE_COMMIT: ${{ needs.resolve-source.outputs.commit }}
           PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          BUILD_COMMAND: ${{ secrets.CAD_BUILD_COMMAND }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
           set -eu
@@ -102,13 +104,8 @@ jobs:
           actual=$(git rev-parse HEAD 2>>"$log") || fail
           [ "$actual" = "$SOURCE_COMMIT" ] || fail
           echo 'Source checkout verified.'
-          if ! bash scripts/desktop/package-ci.sh >>"$log" 2>&1; then
-            if [ "$PLATFORM" = win ]; then
-              echo 'Windows packaging is blocked: the CAD runtime assembler is not available.'
-              exit 1
-            fi
-            fail
-          fi
+          build_command="${BUILD_COMMAND:-bash scripts/desktop/package-ci.sh}"
+          bash -c "$build_command" >>"$log" 2>&1 || fail
           echo 'Build completed.'
 
       - name: Upload to private destination
@@ -117,6 +114,7 @@ jobs:
           GH_TOKEN: ${{ secrets.CAD_DEST_TOKEN }}
           DEST_REPOSITORY: ${{ secrets.CAD_DEST_REPOSITORY }}
           PLATFORM: ${{ matrix.platform }}
+          OUTPUT_DIRECTORY: ${{ secrets.CAD_OUTPUT_DIRECTORY }}
         run: |
           set -eu
           log="$RUNNER_TEMP/upload.log"
@@ -127,7 +125,9 @@ jobs:
           gh api "repos/$DEST_REPOSITORY" --jq .private >"$RUNNER_TEMP/private.out" 2>>"$log" || fail
           [ "$(cat "$RUNNER_TEMP/private.out")" = true ] || fail
           files=()
-          while IFS= read -r -d '' file; do files+=("$file"); done < <(find "$RUNNER_TEMP/source/apps/desktop/dist" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -print0 2>>"$log")
+          output_directory="${OUTPUT_DIRECTORY:-apps/desktop/dist}"
+          [[ "$output_directory" != /* && "$output_directory" != *..* ]] || fail
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find "$RUNNER_TEMP/source/$output_directory" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -print0 2>>"$log")
           [ "${#files[@]}" -gt 0 ] || fail
           tag="build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
           gh release create "$tag" "${files[@]}" --repo "$DEST_REPOSITORY" --draft --title "$tag" --notes '' >>"$log" 2>&1 || fail
